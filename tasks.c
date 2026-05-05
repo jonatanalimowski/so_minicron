@@ -125,25 +125,127 @@ void free_task(Task *task) {
     free(Task);
 }
 
+Task* parse_taskfile(const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (!file) return NULL;
+
+    Task *head = NULL;
+    char line[1024];
+
+    while (fgets(line, sizeof(line), file)) {
+        line[strcspn(line, "\n")] = 0;
+
+        char *hours_s   = strtok(line, ":");
+        char *minutes_s = strtok(NULL, ":");
+        char *full_cmd  = strtok(NULL, ":");
+        char *info_s    = strtok(NULL, ":");
+
+        if (hours_s && minutes_s && full_cmd && info_s) {
+            size_t seconds = (atoi(hours_s) * 3600) + (atoi(minutes_s) * 60);
+            int info = atoi(info_s);
+
+            size_t pipes = 0;
+            for (int i = 0; full_cmd[i]; i++) {
+                if (full_cmd[i] == '|') pipes++;
+            }
+
+            
+            char **progs = malloc((pipes + 1) * sizeof(char *));
+            char *command_copy = strdup(full_cmd); 
+            
+            char *single_prog = strtok(command_copy, "|");
+            size_t idx = 0;
+            while (single_prog != NULL) {
+                
+                while(*single_prog == ' ') single_prog++; 
+                progs[idx++] = single_prog;
+                single_prog = strtok(NULL, "|");
+            }
+
+            Task *new_node = create_task(seconds, pipes, (const char**)progs, info);
+            
+            if (new_node) {
+                insert_sorted(&head, new_node);
+            }
+
+            free(command_copy);
+            free(progs);
+        }
+    }
+
+    fclose(file);
+    return head;
+}
 
 
 int main(int argc, char *argv[]) {
 	if(argc!=4){
-	fprintf(stderr, "Usage: %s <> <>", argv[0]);
 	return 1;
 	}
-	
+	taskfile = argv[1];
 	Task curr;
 	while(curr&&running_flag&&read_flag)
 	{
 	read_flag = 0;
 	/*wczytaj, sparsuj i sortując przez wstawianie stwórz stos FIFO ustawiając Task* curr i Task* next */
-	
+	curr = parse_taskfile(taskfile);
 	while(curr&&running_flag)
 	{
 		sleep(curr->time);
 		/*utwórz n procesów i połącz je pipe()*/
-		
+		pid_t pid = fork();
+
+		if (pid < 0) {	
+		perror("fork");
+		return 1;
+		} } else if (pid == 0) {
+    
+    int num_progs = curr->pipe_amount + 1;
+    int pipefds[2 * (num_progs - 1)];
+
+    for (int i = 0; i < num_progs - 1; i++) {
+        if (pipe(pipefds + i * 2) < 0) {
+            perror("pipe");
+            _exit(EXIT_FAILURE);
+        }
+    }
+
+    for (int i = 0; i < num_progs; i++) {
+        pid_t p_pid = fork();
+        if (p_pid == 0) {
+            if (i > 0) {
+                dup2(pipefds[(i - 1) * 2], STDIN_FILENO);
+            }
+            
+            if (i < num_progs - 1) {
+                dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
+            } else {
+                int fd = open(output_filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                if (fd != -1) {
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                }
+            }
+
+            for (int j = 0; j < 2 * (num_progs - 1); j++) {
+                close(pipefds[j]);
+            }
+
+            char *args[] = {curr->prog_names[i], NULL};
+            execvp(args[0], args);
+            perror("execvp");
+            _exit(EXIT_FAILURE);
+        }
+    }
+
+    for (int i = 0; i < 2 * (num_progs - 1); i++) {
+        close(pipefds[i]);
+    }
+    for (int i = 0; i < num_progs; i++) {
+        wait(NULL);
+    }
+    _exit(EXIT_SUCCESS);
+}
 		Task* help = curr;
 		curr = curr->next;
 		free_task(help);

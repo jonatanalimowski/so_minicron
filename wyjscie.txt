@@ -1,0 +1,17 @@
+
+Polecenie: ls -l /tmp  | wc -l
+1
+Polecenie: ls -l /tmp  | wc -l
+1
+Polecenie: echo "Test błędu" > /nonexistent/file
+Polecenie: ps aux
+USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root         1  0.0  0.0  11228  1120 ?        Ssl  May12   0:00 /init
+root         4  0.0  0.0  11808  1128 ?        Sl   May12   0:01 plan9 --control-socket 6 --log-level 4 --server-fd 7 --pipe-fd 9 --socket-path /mnt/c/Users/melon/AppData/Local/Packages/CanonicalGroupLimited.Ubuntu22.04LTS_79rhkp1fndgsc/LocalState/fsserver --log-truncate
+root         8 11.6  0.0  14416  4192 ?        R    May12 161:49 -bash
+syslog     554  0.0  0.0 316940  2320 ?        Ssl  May12   0:00 /usr/sbin/rsyslogd
+root      1421  0.0  0.0  11228   576 tty2     Ss   17:09   0:00 /init
+root      1422  0.0  0.0  14388  4124 tty2     S    17:09   0:00 -bash
+root      2093  0.0  0.0  10820   508 ?        R    18:31   0:00 ./mini-cron /home/so_minicron/taskfile.txt /home/so_minicron/wyjscie.txt
+root      2137  0.0  0.0  10820   264 ?        S    18:42   0:00 ./mini-cron /home/so_minicron/taskfile.txt /home/so_minicron/wyjscie.txt
+root      2138  0.0  0.0  15524  1936 ?        R    18:42   0:00 ps aux

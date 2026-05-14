@@ -84,8 +84,8 @@ static void demonize()
 		exit(EXIT_FAILURE);
 	}
 
-	signal(SIGCHLD, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
+	signal(SIGCHLD, SIG_IGN);
 	signal(SIGINT, signal_handler);
 	signal(SIGUSR1, signal_handler);
 	signal(SIGUSR2, signal_handler);
@@ -102,7 +102,6 @@ static void demonize()
 	}
 
 	umask(0);
-
 	chdir("/");
 
 	int x;
@@ -110,6 +109,12 @@ static void demonize()
 	{
 		close(x);
 	}
+
+	int fd0 = open("/dev/null", O_RDWR);
+	dup2(fd0, STDIN_FILENO);
+	dup2(fd0, STDOUT_FILENO);
+	dup2(fd0, STDERR_FILENO);
+	if (fd0 > 2) close(fd0);
 
 	openlog("mini-cron", LOG_PID, LOG_DAEMON);
 }
@@ -167,7 +172,6 @@ void insert_sorted(Task **head, Task *new_node) {
     }
 }
 
-// UZUPELNIC PARSOWANIE O FUNKCJE SPLIT COMMAND
 Task* parse_taskfile(const char *filename) {
     FILE *file = fopen(filename, "r");
     if (!file) return NULL;
@@ -200,7 +204,7 @@ Task* parse_taskfile(const char *filename) {
             while (single_prog != NULL) {
 
                 while(*single_prog == ' ') single_prog++;
-                progs[idx++] = single_prog;
+                progs[idx++] = strdup(single_prog);
                 single_prog = strtok(NULL, "|");
             }
 
@@ -243,8 +247,12 @@ int main(int argc, char *argv[]) {
 		// Obsługa SIGUSR2
 		if (log_flag) {
 			Task *help = curr;
+			if (!help) {
+				syslog(LOG_INFO, "Brak zadan w kolejce");
+			}
+
 			while (help) {
-				syslog(LOG_INFO, "Zadanie w kolejce: info=%d", help->info);
+				syslog(LOG_INFO, "Zadanie w kolejce, info: %d", help->info);
 				help = help->next;
 			}
 			log_flag = 0;
@@ -256,68 +264,93 @@ int main(int argc, char *argv[]) {
 			struct tm *t = localtime(&now);
 			size_t seconds_now = t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec;
 			int diff = (int)curr->time - (int)seconds_now;
-
-			if (diff > 0) {
-				sleep(diff);
-			} else if (diff < 0) {
+			syslog(LOG_INFO, "Zadanie wykona się za: %d sekund", diff);
+			if (diff < 0) {
 				diff +=  86400;
-				sleep(diff);
+			}
+
+			while (diff > 0 && running_flag && !read_flag && !log_flag) {
+				sleep(1);
+				diff--;
+			}
+
+			if (read_flag || log_flag) {
+				continue;
 			}
 
 			pid_t pid = fork();
 			if (pid < 0) {
-				perror("fork");
+				syslog(LOG_ERR, "Blad przy forkowaniu");
 				return 1;
 			}
 
 			else if (pid == 0) {
-		    		int num_progs = curr->pipe_amount + 1;
-		    		int pipefds[2 * (num_progs - 1)];
+		    	int num_progs = curr->pipe_amount + 1;
+		    	int pipefds[2 * (num_progs - 1)];
 
+				setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
 				for (int i = 0; i < num_progs - 1; i++) {
 		        		if (pipe(pipefds + i * 2) < 0) {
-		            			perror("pipe");
+		            			syslog(LOG_ERR, "Blad tworzenia potoku");
 		            			_exit(EXIT_FAILURE);
 		        		}
 		    		}
 
-		    		for (int i = 0; i < num_progs; i++) {
+				int fd = open(output_filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
+				if (fd == -1) {
+					syslog(LOG_ERR, "Nie mozna otworzyc pliku wyjsciowego: %m");
+					_exit(EXIT_FAILURE);
+				}
+
+				dprintf(fd, "Polecenie: ");
+				for (int i = 0; i < num_progs; i++) dprintf(fd, "%s%s", curr-> prog_names[i], (i < num_progs - 1) ? " | " : "");
+		    		dprintf(fd, "\n");
+				fsync(fd);
+				for (int i = 0; i < num_progs; i++) {
 		        		pid_t p_pid = fork();
-					//TUTAJ JAKIES POPRAWKI
 		        		if (p_pid == 0) {
 						// łączenie stdin z stdout w potoku
 		            			if (i > 0) dup2(pipefds[(i - 1) * 2], STDIN_FILENO);
 		            			if (i < num_progs - 1) dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
 		            			else {
 							// ostatnie polecenie w potoku
-		                			int fd = open(output_filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
-					                if (fd != -1) {
-								dprintf(fd, "Polecenie: %s \n", curr->prog_names[i]);
-					                	if (curr->info == 0 || curr->info == 2) dup2(fd, STDOUT_FILENO);
-					                	if (curr->info == 1 || curr->info == 2) dup2(fd, STDERR_FILENO);
-								close(fd);
-					                }
+					                if (curr->info == 0 || curr->info == 2) dup2(fd, STDOUT_FILENO);
 			      			}
+
+						if (curr->info == 1 || curr->info == 2) dup2(fd, STDERR_FILENO);
 
 						// Zamkniecie deskryptorow w dziecku
 					        for (int j = 0; j < 2 * (num_progs - 1); j++) {
 					        	close(pipefds[j]);
 					        }
+						close(fd);
+						char *command_to_exec = curr->prog_names[i];
+						while(*command_to_exec == ' ') command_to_exec++;
 
-					        char **args = split_command(curr->prog_names[i]);
-					        execvp(args[0], args);
-					        perror("execvp failed");
+						char **args = split_command(command_to_exec);
+						execvp(args[0], args);
+					        syslog(LOG_ERR, "Blad wykonywania komendy");
 					        _exit(EXIT_FAILURE);
 					}
 				}
 
 				for (int j = 0; j < 2 * (num_progs - 1); j++) close(pipefds[j]);
-				for (int i = 0; i < num_progs; i++) wait(NULL);
-				syslog(LOG_INFO, "Zadanie zakończone.");
+				close(fd);
+				int last_status = 0;
+				for (int i = 0; i < num_progs; i++) {
+					int temp_status;
+					wait(&temp_status);
+					if (i == num_progs - 1) last_status = temp_status; // status ostatniego programu w potoku
+				}
+
+				if (WIFEXITED(last_status)) {
+					syslog(LOG_INFO, "Zadanie zakonczone z kodem: %d", WEXITSTATUS(last_status));
+				}
 				_exit(EXIT_SUCCESS);
 
 			} else {
-				wait(NULL);
+				syslog(LOG_INFO, "Zadanie uruchomione (PID: %d)", pid);
+				waitpid(pid, NULL, WNOHANG);
 				Task* help = curr;
 				curr = curr->next;
 				free_task(help);
